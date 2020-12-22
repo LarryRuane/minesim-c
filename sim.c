@@ -16,6 +16,10 @@ void fail(char *message) {
     exit(1);
 }
 
+static int randrange(int i) {
+    return random() % i;
+}
+
 typedef struct event_s {
     double time;        // when (absolute time) the event should fire
     int miner;          // which miner gets the block
@@ -117,49 +121,111 @@ static double poisson(double average) {
 
 double current_time;
 
-typedef struct miner_ctx_s {
+typedef struct peer_s {
+    int ni;
+    double delay;
+} peer_t;
+
+#define NPEER 100
+typedef struct node_ctx_s {
     pt_thread_t pt_thread;
     pt_func_t pt_func;
     int i;
     int e;  // current event we're waiting for
-} miner_ctx_t;
+    bool is_miner;
+    peer_t peer[NPEER]; // make this variable etc.
+} node_ctx_t;
 
-static pt_t miner_thr(env_t const env) {
-    miner_ctx_t *c = env;
+int nnode = 1 << 15; // must be even, 32k for now
+node_ctx_t *node;
+
+#define delay(_time) do { \
+    c->e = event_alloc(); \
+    event_post(c->e, current_time + _time); \
+    while (!event[c->e].fired) pt_wait(c, &((u64*)0)[c->e]); \
+    event_free(c->e); \
+} while (false)
+
+static pt_t node_thr(env_t const env) {
+    node_ctx_t *c = env;
     pt_resume(c);
+    c->is_miner = (randrange(10) == 0);
+    // make 10 outbound connections
+    int pi = 0;
+    for (int i = 0; i < 10; i++) {
+        // find an available local slot
+        while (pi < NPEER && c->peer[pi].delay > 0) pi++;
+        if (pi >= NPEER) break;
+
+        // perfer nodes that are "close" to us
+        int d, peer_mi, ppi;
+        while (true) {
+            d = 1 + randrange(1 << randrange(16));
+            peer_mi = (c->i + d) % nnode;
+
+            // see if this peer is already in our peer list
+            int j = 0;
+            for (j = 0; j < NPEER; j++) {
+                if (c->peer[j].delay > 0 && c->peer[j].ni == peer_mi) break;
+            }
+            if (j < NPEER) continue;
+
+            // find an available peer slot
+            for (ppi = 0; ppi < NPEER; ppi++) {
+                if (node[peer_mi].peer[ppi].delay == 0) break;
+            }
+            if (ppi < NPEER) break;
+        }
+        c->peer[pi].ni = peer_mi;
+        // one hop away is 1 ms
+        c->peer[pi].delay = (double)d / 1000;
+        // make it bidirectional
+        node[peer_mi].peer[ppi].ni = c->i;
+        node[peer_mi].peer[ppi].delay = c->peer[pi].delay;
+    }
+
     while (true) {
-        c->e = event_alloc();
-        event_post(c->e, current_time+poisson(300));
-        printf("thr %i e %i sleep time %f wakeat %f\n", c->i, c->e, current_time, event[c->e].time);
-        while (!event[c->e].fired) pt_wait(c, &((u64*)0)[c->e]);
-        printf("thr %i e %i awake time %f\n", c->i, c->e, current_time);
-        event_free(c->e);
+        double delay_time = poisson(300);
+        if(0) printf("thr %i e %i sleep time %f wakeat %f\n",
+            c->i, c->e, current_time, current_time+delay_time);
+        delay(delay_time);
     }
     return PT_DONE;
 }
 
-
 int main(void) {
-    if(0) srandom(time(0));
+    {
+        static char rngstate[256];
+        initstate(0 /*time(0)*/, rngstate, sizeof(rngstate));
+    }
 
     event_nalloc = 1;
     event = calloc(1, sizeof(event_t));
     event[0].blockid = 1;
     heap = calloc(1, sizeof(int));
+    node = calloc(nnode, sizeof(node_ctx_t));
 
     protothread_t pt = protothread_create();
-    for (int i = 0; i < 10; i++) {
-        miner_ctx_t * const c = calloc(1, sizeof(*c));
+    for (int i = 0; i < nnode; i++) {
+        node_ctx_t *c = &node[i];
         c->i = i;
-        pt_create(pt, &c->pt_thread, miner_thr, c);
+        pt_create(pt, &c->pt_thread, node_thr, c);
     }
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 8*1000; i++) {
         while (protothread_run(pt));
         if (!nheap) break;
         int e = heap_pop();
         current_time = event[e].time;
         event[e].fired = true;
         pt_broadcast(pt, &((u64*)0)[e]);
+    }
+    for (int i = 0; i < nnode; i++) {
+        printf("%d: ", i);
+        for (int j = 0; j < NPEER; j++) {
+            if (node[i].peer[j].delay == 0) continue;
+            printf("[%d %f], ", node[i].peer[j].ni, node[i].peer[j].delay);
+        }
+        printf("\n");
     }
 
     return 0;
