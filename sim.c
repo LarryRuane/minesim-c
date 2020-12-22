@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "protothread.h"
 
@@ -11,45 +12,30 @@ typedef unsigned char u8;
 typedef unsigned long long u64;
 
 void fail(char *message) {
-    fprintf(stderr, "%s", message);
+    fprintf(stderr, "%s\n", message);
     exit(1);
 }
 
-struct event_s {
+typedef struct event_s {
     double time;        // when (absolute time) the event should fire
     int miner;          // which miner gets the block
     bool mining;        // block arrival from mining (true) or peer (false)
+    bool fired;         // event's time has been reached (taken out of heap)
     u64 blockid;        // block being mined on top of, or block from peer
-};
+} event_t;
+
 // unordered
-int event_alloc;        // event[0..event_alloc-1]
-struct event_s *event;
-int free_events;        // first free event (linked by blockid)
+int event_nalloc;       // event[0..event_nalloc-1]
+event_t *event;
+int free_events;        // head of list of free event (linked by blockid)
 
 // time-ordered priority queue, entries are indices into events[]
-int *heap;              // heap[0..event_alloc-1]
+int *heap;              // heap[0..event_nalloc-1]
 int nheap = 0;          // number of valid items currently in the heap
-
-int alloc_event(void) {
-    if (free_events == event_alloc) {
-        int new_alloc = event_alloc * 2;
-        event = realloc(event, new_alloc*sizeof(struct event_s));
-        if (!event) fail("out of memory!");
-        heap = realloc(heap, new_alloc*sizeof(int));
-        if (!heap) fail("out of memory!");
-        for (int i = event_alloc; i < new_alloc; i++) {
-            event[i].blockid = i+1;
-        }
-        event_alloc = new_alloc;
-    }
-    int r = free_events;
-    free_events = event[free_events].blockid;
-    return r;
-}
 
 // append to the end of the array, then "bubble" it upwards
 static void heap_add(int n) {
-    assert(nheap < event_alloc);
+    assert(nheap < event_nalloc);
     int i = nheap++;
     while (i) {
         int parent = (i-1)/2;
@@ -93,29 +79,88 @@ static int heap_pop(void) {
     return r;
 }
 
-double currenttime;
+int event_alloc(void) {
+    if (free_events == event_nalloc) {
+        int new_nalloc = event_nalloc * 2;
+        event = realloc(event, new_nalloc*sizeof(event_t));
+        if (!event) fail("out of memory!");
+        heap = realloc(heap, new_nalloc*sizeof(int));
+        if (!heap) fail("out of memory!");
+        for (int i = event_nalloc; i < new_nalloc; i++) {
+            memset(&event[i], 0, sizeof(event_t));
+            event[i].blockid = i+1;
+        }
+        event_nalloc = new_nalloc;
+    }
+    int r = free_events;
+    free_events = event[free_events].blockid;
+    return r;
+}
 
-struct miner_ctx_s {
-};
+void event_post(int e, double time) {
+    event[e].time = time;
+    heap_add(e);
+}
+
+void event_free(int i) {
+    memset(&event[i], 0, sizeof(event_t));
+    event[i].blockid = free_events;
+    free_events = i;
+}
+
+// Return a random value with Poisson distribution with the given average.
+// Useful for block intervals and also network message timings.
+static double poisson(double average) {
+    // It may be worth using a better RNG here than the default.
+    return -log(1.0-(double)random()/RAND_MAX)*average;
+}
+
+double current_time;
+
+typedef struct miner_ctx_s {
+    pt_thread_t pt_thread;
+    pt_func_t pt_func;
+    int i;
+    int e;  // current event we're waiting for
+} miner_ctx_t;
+
+static pt_t miner_thr(env_t const env) {
+    miner_ctx_t *c = env;
+    pt_resume(c);
+    while (true) {
+        c->e = event_alloc();
+        event_post(c->e, current_time+poisson(300));
+        printf("thr %i e %i sleep time %f wakeat %f\n", c->i, c->e, current_time, event[c->e].time);
+        while (!event[c->e].fired) pt_wait(c, &((u64*)0)[c->e]);
+        printf("thr %i e %i awake time %f\n", c->i, c->e, current_time);
+        event_free(c->e);
+    }
+    return PT_DONE;
+}
 
 
 int main(void) {
-    if(1) srandom(time(0));
+    if(0) srandom(time(0));
 
-    event_alloc = 1;
-    event = malloc(sizeof(struct event_s));
+    event_nalloc = 1;
+    event = calloc(1, sizeof(event_t));
     event[0].blockid = 1;
-    heap = malloc(sizeof(int));
+    heap = calloc(1, sizeof(int));
 
-    int n = 110;
-    for (int i = 0; i < n; i++) {
-        int e = alloc_event();
-        event[e].time = -log((double)1.0-(double)random()/RAND_MAX)*300;
-        heap_add(e);
+    protothread_t pt = protothread_create();
+    for (int i = 0; i < 10; i++) {
+        miner_ctx_t * const c = calloc(1, sizeof(*c));
+        c->i = i;
+        pt_create(pt, &c->pt_thread, miner_thr, c);
     }
-    for (int i = 0; i < n; i++) {
-        printf("%f ", event[heap_pop()].time);
+    for (int i = 0; i < 10000; i++) {
+        while (protothread_run(pt));
+        if (!nheap) break;
+        int e = heap_pop();
+        current_time = event[e].time;
+        event[e].fired = true;
+        pt_broadcast(pt, &((u64*)0)[e]);
     }
-    printf("\n");
+
     return 0;
 }
