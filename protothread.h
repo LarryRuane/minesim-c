@@ -1,8 +1,3 @@
-/**************************************************************/
-/* PROTOTHREAD.H */
-/* Copyright (c) 2019, Larry Ruane, LeftHand Networks Inc. */
-/* See license.txt */
-/**************************************************************/
 #ifndef PROTOTHREAD_H
 #define PROTOTHREAD_H 1
 #include <stdlib.h>
@@ -58,9 +53,9 @@ typedef struct pt_thread_s pt_thread_t;
  * the overall system.
  */
 typedef struct protothread_s {
-    void (*ready_function)(env_t); /* function to call when a thread becomes ready */
+    void (*ready_function)(env_t); /* call when a thread becomes ready */
     env_t ready_env;               /* environment to pass to ready_function() */
-    pt_thread_t *running;          /* current running protothread (if non-NULL) */
+    pt_thread_t *running;          /* current running protothread (or NULL) */
     pt_thread_t *ready;            /* ready to run list (points to newest) */
     pt_thread_t *wait[PT_NWAIT];   /* waiting for an event (points to newest) */
 } *protothread_t;

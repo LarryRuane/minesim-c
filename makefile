@@ -30,5 +30,11 @@ pttest: protothread_test.o protothread_sem.o protothread_lock.o
 test: pttest
 	./pttest
 
+sim: sim.o
+	gcc $(CFLAGS) -o sim sim.o -lm
+
+sim.o: sim.c
+	gcc $(CFLAGS) -c sim.c
+
 clean:
 	rm -f *.o pttest

@@ -51,10 +51,9 @@ create_thr(env_t const env) {
 static void
 test_thread_create(void) {
     protothread_t const pt = protothread_create();
-    int i;
     create_context_t * const c = malloc(sizeof(*c));
 
-    for (i = 0; i < 1000; i++) {
+    for (int i = 0; i < 1000; i++) {
         pt_create(pt, &c->pt_thread, create_thr, c);
         protothread_run(pt);
     }
