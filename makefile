@@ -13,7 +13,7 @@ W = \
 
 CFLAGS = -O0 -g -m64 $(W)
 
-all: pttest
+all: pttest sim
 
 protothread_test.o: protothread_test.c
 	gcc $(CFLAGS) -c protothread_test.c

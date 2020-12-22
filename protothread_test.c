@@ -184,13 +184,13 @@ typedef struct broadcast_context_s {
     pt_func_t pt_func;
     struct broadcast_global_context_s * gc;
     void * chan;
-    bool_t run;
+    bool run;
 } broadcast_context_t;
 
 typedef struct broadcast_global_context_s {
     struct broadcast_context_s c[N];
     int count;
-    bool_t done;
+    bool done;
 } broadcast_global_context_t;
 
 static pt_t
@@ -384,7 +384,7 @@ test_pc_big(void) {
 #define CHANS (NODES/8)
 
 typedef struct recursive_call_global_context_s {
-    bool_t seen[NODES];
+    bool seen[NODES];
     int nseen;
 } recursive_call_global_context_t;
 
@@ -679,7 +679,7 @@ typedef struct func_pointer_context_s {
     pt_func_t pt_func;
     struct level2_s {
         pt_func_t pt_func;
-        bool_t ran;
+        bool ran;
     } level2;
 } func_pointer_context_t;
 
@@ -722,7 +722,7 @@ test_func_pointer(void) {
 
 /******************************************************************************/
 
-static bool_t ready;
+static bool ready;
 static void
 set_ready(env_t env) {
     assert(env == &ready);
@@ -750,7 +750,7 @@ static void
 test_ready(void) {
     protothread_t const pt = protothread_create();
     protothread_set_ready_function(pt, set_ready, &ready);
-    bool_t more;   /* more work to do */
+    bool more;   /* more work to do */
     ready_context_t * const c = malloc(sizeof(*c));
 
     /* nothing to run */
@@ -819,7 +819,7 @@ static void
 test_kill(void) {
     protothread_t const pt = protothread_create();
     kill_context_t * const c = calloc(2, sizeof(*c));
-    bool_t more;
+    bool more;
 
     /* Create the thread, kill it while it is in the ready queue and make
      * sure it didn't run.

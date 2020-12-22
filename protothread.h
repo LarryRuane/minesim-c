@@ -12,7 +12,6 @@
 
 /* standard definitions */
 #include <stdbool.h>
-typedef bool bool_t;
 typedef void * env_t;
 
 /* Number of wait queues (size of wait hash table), power of 2 */
@@ -137,7 +136,7 @@ pt_unlink_oldest(pt_thread_t ** const head) {
 /* finds thread <n> in list <head> and unlinks it.  Returns TRUE if
  * it was found.
  */
-static inline bool_t
+static inline bool
 pt_find_and_unlink(pt_thread_t ** const head, pt_thread_t * const n) {
     pt_thread_t * prev = *head;
 
@@ -327,7 +326,7 @@ protothread_free(state_t const s) {
     free(s);
 }
 
-static inline bool_t
+static inline bool
 protothread_run(state_t const s) {
     pt_assert(s->running == NULL);
     if (s->ready == NULL) {
@@ -362,7 +361,7 @@ protothread_set_ready_function(state_t const s, void (*f)(env_t), env_t env) {
  * channel (if any) runnable.
  */
 static inline void
-pt_wake(state_t const s, void * const channel, bool_t const wake_one) {
+pt_wake(state_t const s, void * const channel, bool const wake_one) {
     pt_thread_t ** const wq = pt_get_wait_list(s, channel);
     pt_thread_t * prev = *wq;  /* one before the oldest waiting thread */
 
@@ -401,7 +400,7 @@ pt_broadcast(state_t const s, void * const channel) {
  * very dangerous if the thread in question isn't written to expect this
  * operation.
  */
-static inline bool_t
+static inline bool
 pt_kill(pt_thread_t * const t) {
     state_t const s = t->s;
     pt_assert(s->running != t);
