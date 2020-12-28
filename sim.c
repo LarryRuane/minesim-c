@@ -177,7 +177,7 @@ int event_alloc(void) {
 
 void event_post(int e, double time) {
     event[e].time = time;
-    heap_add(e);
+    if (time > current_time) heap_add(e);
 }
 
 void event_free(int i) {
@@ -206,7 +206,7 @@ typedef struct node_s {
     int ni;             // my node index
     int qhead;          // event input message queue, -1 means empty
     int delay_event;    // event index
-    u64 current;        // blockid being mined on
+    u64 tip;            // blockid of best block *we* know about
     double hashrate;
     u64 mined;          // how many total blocks we've mined (including reorg)
     u64 credit;         // how many best-chain blocks we've mined
@@ -214,13 +214,14 @@ typedef struct node_s {
 } node_t;
 
 // later there will be a dynamic set of nodes
-int nnode = 1 << 15; // must be even, 32k for now
+int node_shift; // for now only 8 nodes
+int nnode;      // must be even, 32k for now
 node_t *node;
 
-void stop_mining(int ni) {
-    node_t *np = &node[ni];
-    block_t *bp = getblock(np->current);
-    if (--bp->active == 0) ntips--;
+void node_init(void) {
+    node_shift = 15; // for now only 8 nodes
+    nnode = 1 << node_shift; // must be even, 32k for now
+    node = calloc(nnode, sizeof(node_t));
 }
 
 // Relay a newly-discovered block (either we mined or relayed to us).
@@ -237,7 +238,7 @@ void relay_notify(protothread_t pt, int e) {
     pt_signal(pt, &np->qhead);
 }
 
-void relay(int ni, u64 newblockid) {
+void relay(int ni) {
     node_t *np = &node[ni];
     for (int pi = 0; pi < NPEER; pi++) {
         peer_t *pp = &np->peer[pi];
@@ -245,13 +246,13 @@ void relay(int ni, u64 newblockid) {
         // Improve simulator efficiency by not relaying blocks
         // that are certain to be ignored.
         node_t *ppn = &node[pp->ni];
-        if (!validblock(ppn->current) ||
-                getheight(ppn->current) < getheight(newblockid)) {
+        if (!validblock(ppn->tip) ||
+                getheight(ppn->tip) < getheight(np->tip)) {
             int e = event_alloc();
             event_t *ep = &event[e];
-            ep->u.new_block.ni = pi;
+            ep->u.new_block.ni = ppn->ni;
             ep->u.new_block.mining = false;
-            ep->u.new_block.blockid = newblockid;
+            ep->u.new_block.blockid = np->tip;
             ep->notify = relay_notify;
             // TODO jitter this delay, or sometimes fail to forward?
             event_post(e, current_time + pp->delay);
@@ -260,12 +261,8 @@ void relay(int ni, u64 newblockid) {
 }
 
 // Start mining on top of the given existing block
-void start_mining(int ni, u64 blockid) {
-    node_t *np = &node[ni];
-    // We'll mine on top of blockid
-    np->current = blockid;
-    if (!np->hashrate) return;
-    block_t *bp = getblock(blockid);
+void start_mining(node_t *np) {
+    block_t *bp = getblock(np->tip);
     if (bp->active++ == 0) ntips++;
 
     // Schedule an event for when our "mining" will be done.
@@ -273,16 +270,21 @@ void start_mining(int ni, u64 blockid) {
 
     int e = event_alloc();
     event_t *ep = &event[e];
-    ep->u.new_block.ni = ni;
+    ep->u.new_block.ni = np->ni;
     ep->u.new_block.mining = true;
-    ep->u.new_block.blockid = blockid;
+    ep->u.new_block.blockid = np->tip;
     ep->notify = relay_notify;
     // TODO jitter this delay, or sometimes fail to forward?
     event_post(e, current_time + solvetime);
     printf("%.3f %03d start-on %llu height %llu "
             "mined %lld credit %lld solve %.2f\n",
-        current_time, ni, blockid, getheight(blockid),
+        current_time, np->ni, np->tip, getheight(np->tip),
         np->mined, np->credit, solvetime);
+}
+
+void stop_mining(node_t *np) {
+    block_t *bp = getblock(np->tip);
+    if (--bp->active == 0) ntips--;
 }
 
 void delay_notify(protothread_t pt, int e) {
@@ -301,13 +303,13 @@ void delay_notify(protothread_t pt, int e) {
 } while (false)
 
 pt_t node_thr(env_t const env) {
-    node_t *np = env;
-    const int ni = np->ni;
+    node_t * const np = env;
+    int const ni = np->ni;
     pt_resume(np);
     //np->is_miner = (randrange(10) == 0);
     // make 10 outbound connections
     int pi = 0;
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 2; i++) {
         // find an available local slot
         while (pi < NPEER && np->peer[pi].delay > 0) pi++;
         if (pi >= NPEER) break;
@@ -315,7 +317,7 @@ pt_t node_thr(env_t const env) {
         // perfer nodes that are "close" to us
         int d, peer_mi, ppi;
         while (true) {
-            d = 1 + randrange(1 << randrange(16));
+            d = 1 + randrange(1 << randrange(node_shift + 1));
             peer_mi = (ni + d) % nnode;
 
             // see if this peer is already in our peer list
@@ -338,34 +340,38 @@ pt_t node_thr(env_t const env) {
         node[peer_mi].peer[ppi].ni = ni;
         node[peer_mi].peer[ppi].delay = np->peer[pi].delay;
     }
-    if (ni < 4) np->hashrate = 1.0;
+    if (ni < 4) np->hashrate = 1.0; // XXX temp, only 4 miners
     totalhash += np->hashrate;
-    start_mining(ni, baseblockid);
+    np->tip = baseblockid;
+    if (np->hashrate > 0) start_mining(np);
     while (true) {
-        double delay_time = 0.2;
-        if(1) printf("thr %i time %f wakeat %f\n",
+        double delay_time = ni*20;
+        if(0) printf("thr %i time %f wakeat %f\n",
             ni, current_time, current_time+delay_time);
         if(0) delay(np, delay_time);
         // wait for a block to arrive
         while (np->qhead < 0) pt_wait(np, &np->qhead);
-        int e = np->qhead;
-        event_t *ep = &event[e];
+        int const ei = np->qhead;
+        event_t *ep = &event[np->qhead];
         np->qhead = ep->next;
         u64 blockid = ep->u.new_block.blockid;
-        if (ep->u.new_block.mining) {
+        bool mining = ep->u.new_block.mining;
+        event_free(ei);
+        if (mining) {
+            assert(np->hashrate > 0);
             // We mined a block (unless this is a stale event).
-            if (blockid != np->current) {
+            if (blockid != np->tip) {
                 // This is a stale mining event, ignore it (we should
                 // still have an active mining event outstanding).
                 continue;
             }
             np->mined++;
-            stop_mining(ni);
+            stop_mining(np);
             blockid = baseblockid + nblock;
             int bi = block_alloc();
             block_t *bp = &block[bi];
-            bp->parent = np->current;
-            bp->height = getheight(np->current) + 1;
+            bp->parent = np->tip;
+            bp->height = getheight(np->tip) + 1;
             bp->miner = ni;
         } else {
             // Block received from a peer (but could be a stale message).
@@ -373,18 +379,21 @@ pt_t node_thr(env_t const env) {
                 // We're already mining on a block that's at least as good.
                 continue;
             }
-            if (validblock(np->current) &&
-                    getheight(blockid) <= getheight(np->current)) {
+            if (validblock(np->tip) &&
+                    getheight(blockid) <= getheight(np->tip)) {
                 // We're already mining on a block that's at least as good.
                 continue;
             }
             // This block is better, switch to it, first compute reorg depth.
             printf("%.3f %i received-switch-to %llu\n",
                 current_time, ni, blockid);
+            if (np->hashrate > 0) stop_mining(np);
+
+            // update reorg statistics
             if (np->hashrate > 0) {
-                block_t *c = getblock(np->current);
+                block_t *c = getblock(np->tip);
                 block_t *t = getblock(blockid); // to block (switching to)
-                // Move back on the "to" (better) chain until even with current.
+                // Move back on the "to" (better) chain until even with tip.
                 while (t->height > c->height) {
                     t = getblock(t->parent);
                 }
@@ -402,11 +411,11 @@ pt_t node_thr(env_t const env) {
                 if (maxreorg < reorg) {
                     maxreorg = reorg;
                 }
-                stop_mining(ni);
             }
         }
-        relay(ni, blockid);
-        start_mining(ni, blockid);
+        np->tip = blockid;
+        relay(ni);
+        if (np->hashrate > 0) start_mining(np);
     }
     return PT_DONE;
 }
@@ -418,7 +427,7 @@ void clean_blocks(void) {
     // Since all miners are building on the same tip, the blocks from
     // the tip to the base can't be reorged away, so we can remove
     // them, but give credit for these mined blocks as we do.
-    u64 newbaseblockid = node[0].current;
+    u64 newbaseblockid = node[0].tip;
     block_t *bp = getblock(newbaseblockid);
     while (bp != &block[0]) {
         node[bp->miner].credit++;
@@ -426,8 +435,10 @@ void clean_blocks(void) {
     }
     // Clean up (prune) unneeded blocks.
     block_t b = *getblock(newbaseblockid);
+    block_nalloc = 1;
     block = realloc(block, sizeof(block_t));
     block[0] = b;
+    nblock = 1;
     baseblockid = newbaseblockid;
 }
 
@@ -440,7 +451,7 @@ int main(void) {
     block_init();
     event_init();
     heap_init();
-    node = calloc(nnode, sizeof(node_t));
+    node_init();
 
     protothread_t pt = protothread_create();
     for (int ni = 0; ni < nnode; ni++) {
@@ -458,7 +469,7 @@ int main(void) {
         current_time = ep->time;
         ep->notify(pt, e); // should make a thread runnable
     }
-    if(0) for (int ni = 0; ni < nnode; ni++) {
+    if(1) for (int ni = 0; ni < nnode; ni++) {
         printf("%d: ", ni);
         for (int j = 0; j < NPEER; j++) {
             if (node[ni].peer[j].delay == 0) continue;
